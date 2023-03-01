@@ -19,9 +19,11 @@ import (
 func main() {
 	var (
 		kubeConfig string
+		namespace  string
 	)
 
 	flag.StringVar(&kubeConfig, "kubeconfig", "~/.kube/config", "Kubeconfig file path (default \"~/.kube/config\"")
+	flag.StringVar(&namespace, "namespace", "", "Scan images in a namespace (default all namespaces")
 	flag.Parse()
 
 	if strings.HasPrefix(kubeConfig, "~/") {
@@ -51,7 +53,7 @@ func main() {
 	}
 
 	// access the API to list pods
-	pods, err := clientset.CoreV1().Pods("").List(context.TODO(), v1.ListOptions{})
+	pods, err := clientset.CoreV1().Pods(namespace).List(context.TODO(), v1.ListOptions{})
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -72,7 +74,7 @@ func main() {
 
 	for _, image := range images {
 		outputFile := filepath.Join("results", regexp.MustCompile(`[^a-zA-Z	0-9]+`).ReplaceAllString(image, "_")+".sarif.json")
-		cmd := exec.Command("docker", "scout", "cves", "--format", "sarif", "--output", outputFile, "--only-fixed", image)
+		cmd := exec.Command("docker", "scout", "cves", "--format", "sarif", "--only-fixed", "--output", outputFile, image)
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr
 		if err := cmd.Run(); err != nil {
