@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 
 	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
@@ -79,51 +80,61 @@ func main() {
 	lowVuln := 0
 	unspecifiedVuln := 0
 
+	var wg sync.WaitGroup
+
 	for _, image := range images {
-		// replace the matched non-alphanumeric characters with the underscore character
-		outputFile := filepath.Join("results", regexp.MustCompile(`[^a-zA-Z-0-9]+`).ReplaceAllString(image, "_")+".sarif.json")
-		cmd := exec.Command("docker", "scout", "cves", "--format", "sarif", "--only-fixed", "--output", outputFile, image)
-		cmd.Stdout = os.Stdout
-		cmd.Stderr = os.Stderr
-		if err := cmd.Run(); err != nil {
-			log.Fatal(err)
-		}
+		wg.Add(1)
+		image := image
+		go func() {
+			defer wg.Done()
 
-		b, err := os.ReadFile(outputFile)
-		if err != nil {
-			log.Fatal(err)
-		}
-		var report SarifReport
-
-		if err := json.Unmarshal(b, &report); err != nil {
-			log.Fatal(err)
-		}
-
-		for _, result := range report.Runs[0].Results {
-
-			for _, rule := range report.Runs[0].Tool.Driver.Rules {
-				if rule.ID == result.RuleID {
-					log.Printf("Severity: %s", rule.Properties.CvssV3Severity)
-
-					switch rule.Properties.CvssV3Severity {
-					case "UNSPECIFIED":
-						unspecifiedVuln += 1
-					case "LOW":
-						lowVuln += 1
-					case "MEDIUM":
-						mediumVuln += 1
-					case "HIGH":
-						highVuln += 1
-					case "CRITICAL":
-						criticalVuln += 1
-					}
-					break
-				}
+			// replace the matched non-alphanumeric characters with the underscore character
+			outputFile := filepath.Join("results", regexp.MustCompile(`[^a-zA-Z-0-9]+`).ReplaceAllString(image, "_")+".sarif.json")
+			cmd := exec.Command("docker", "scout", "cves", "--format", "sarif", "--only-fixed", "--output", outputFile, image)
+			cmd.Stdout = os.Stdout
+			cmd.Stderr = os.Stderr
+			if err := cmd.Run(); err != nil {
+				log.Fatal(err)
 			}
 
-		}
+			b, err := os.ReadFile(outputFile)
+			if err != nil {
+				log.Fatal(err)
+			}
+			var report SarifReport
 
+			if err := json.Unmarshal(b, &report); err != nil {
+				log.Fatal(err)
+			}
+
+			for _, result := range report.Runs[0].Results {
+
+				for _, rule := range report.Runs[0].Tool.Driver.Rules {
+					if rule.ID == result.RuleID {
+						log.Printf("Severity: %s", rule.Properties.CvssV3Severity)
+
+						switch rule.Properties.CvssV3Severity {
+						case "UNSPECIFIED":
+							unspecifiedVuln += 1
+						case "LOW":
+							lowVuln += 1
+						case "MEDIUM":
+							mediumVuln += 1
+						case "HIGH":
+							highVuln += 1
+						case "CRITICAL":
+							criticalVuln += 1
+						}
+						break
+					}
+				}
+
+			}
+		}()
 	}
+
+	log.Println("Waiting for all goroutines to complete")
+	wg.Wait()
 
 	log.Printf("Total critical: %d", criticalVuln)
 	log.Printf("Total high: %d", highVuln)
