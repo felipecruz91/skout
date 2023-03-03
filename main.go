@@ -30,7 +30,7 @@ func main() {
 	)
 
 	flag.StringVar(&kubeConfig, "kubeconfig", "~/.kube/config", "Kubeconfig file path (default \"~/.kube/config\"")
-	flag.StringVar(&namespace, "namespace", "", "Scan images in a namespace (default all namespaces")
+	flag.StringVar(&namespace, "namespace", "", "Analyzes images in a namespace (default all namespaces")
 	flag.BoolVar(&verbose, "v", false, "Verbose output")
 	flag.Parse()
 
@@ -78,10 +78,14 @@ func main() {
 		for _, container := range pod.Spec.Containers {
 			if _, ok := images[container.Image]; !ok {
 				images[container.Image] = container.Image
-				log.Println(container.Image)
+				if verbose {
+					log.Println(container.Image)
+				}
 			}
 		}
 	}
+
+	log.Printf("Analyzing a total of %d images, this may take a few seconds...", len(images))
 
 	if err := os.MkdirAll("results", os.ModePerm); err != nil {
 		log.Fatal(err)
