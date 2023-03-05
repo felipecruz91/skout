@@ -27,7 +27,15 @@ skout
 ### Detect vulnerabilities in the `default` namespace
 
 ```shell
-skout -namespace default
+skout --namespace default
+```
+
+### Passing options to the analysis
+
+You can specify in `skout` the options defined in `docker scout cves -h` to customize the report, for instance:
+
+```shell
+skout --namespace default --ignore-base --only-fixed
 ```
 
 ## How does it work?

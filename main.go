@@ -4,14 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"flag"
 	"fmt"
 	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
-	"strings"
 	"sync"
 
 	"github.com/fatih/color"
@@ -27,23 +25,36 @@ func main() {
 		kubeConfig string
 		namespace  string
 		verbose    bool
+		scoutArgs  []string
 	)
 
-	flag.StringVar(&kubeConfig, "kubeconfig", "~/.kube/config", "Kubeconfig file path (default \"~/.kube/config\"")
-	flag.StringVar(&namespace, "namespace", "", "Analyzes images in a namespace (default all namespaces")
-	flag.BoolVar(&verbose, "v", false, "Verbose output")
-	flag.Parse()
+	for i := 1; i < len(os.Args); i++ {
+		if os.Args[i] == "--kubeconfig" {
+			kubeConfig = os.Args[i+1]
+			i = i + 1
+		} else if os.Args[i] == "--namespace" {
+			namespace = os.Args[i+1]
+			i = i + 1
+		} else if os.Args[i] == "-v" {
+			verbose = true
+		} else if os.Args[i] == "--format" || os.Args[i] == "--o" || os.Args[i] == "--output" {
+			log.Printf("Ignoring flag %q as it is used internally to generate the output.", os.Args[i])
+			i = i + 1
+		} else {
+			scoutArgs = append(scoutArgs, os.Args[i])
+		}
+	}
 
 	if _, err := os.Stat("results"); !errors.Is(err, os.ErrNotExist) {
 		_ = os.RemoveAll("results")
 	}
 
-	if strings.HasPrefix(kubeConfig, "~/") {
+	if kubeConfig == "" {
 		homeDir, err := os.UserHomeDir()
 		if err != nil {
 			log.Fatal(err)
 		}
-		kubeConfig = filepath.Join(homeDir, kubeConfig[2:])
+		kubeConfig = filepath.Join(homeDir, ".kube", "config")
 	}
 
 	if verbose {
@@ -52,7 +63,7 @@ func main() {
 	}
 
 	if _, err := os.Stat(kubeConfig); errors.Is(err, os.ErrNotExist) {
-		log.Fatal(err)
+		log.Fatalf("loading kubeconfig file: %s", err)
 	}
 
 	// uses the current context in kubeconfig
@@ -61,13 +72,11 @@ func main() {
 		log.Fatal(err)
 	}
 
-	// creates the clientset
 	clientset, err := kubernetes.NewForConfig(config)
 	if err != nil {
 		log.Fatal(err)
 	}
 
-	// access the API to list pods
 	pods, err := clientset.CoreV1().Pods(namespace).List(context.TODO(), v1.ListOptions{})
 	if err != nil {
 		log.Fatal(err)
@@ -95,7 +104,6 @@ func main() {
 	highVuln := 0
 	mediumVuln := 0
 	lowVuln := 0
-	unspecifiedVuln := 0
 
 	var wg sync.WaitGroup
 
@@ -124,9 +132,12 @@ func main() {
 
 				// replace the matched non-alphanumeric characters with the underscore character
 				outputFile := filepath.Join("results", regexp.MustCompile(`[^a-zA-Z-0-9]+`).ReplaceAllString(c.Image, "_")+".sarif.json")
-				cmd := exec.Command("docker", "scout", "cves", "--format", "sarif", "--only-fixed", "--output", outputFile, c.Image)
-				//cmd.Stdout = os.Stdout
-				//cmd.Stderr = os.Stderr
+
+				args := []string{"scout", "cves"}
+				args = append(args, scoutArgs...)
+				args = append(args, "--format", "sarif", "--output", outputFile, c.Image)
+
+				cmd := exec.Command("docker", args...)
 				if err := cmd.Run(); err != nil {
 					log.Fatal(err)
 				}
@@ -145,8 +156,6 @@ func main() {
 					for _, rule := range report.Runs[0].Tool.Driver.Rules {
 						if rule.ID == result.RuleID {
 							switch rule.Properties.CvssV3Severity {
-							case "UNSPECIFIED":
-								unspecifiedVuln += 1
 							case "LOW":
 								item.Pod.Containers[0].Vulnerabilities.Low += 1
 								lowVuln += 1
@@ -177,7 +186,6 @@ func main() {
 	wg.Wait()
 
 	rowConfigAutoMerge := table.RowConfig{AutoMerge: true}
-
 	t := table.NewWriter()
 	t.AppendHeader(table.Row{"Namespace", "Pod", "Container (image)", "Vulnerabilities"}, rowConfigAutoMerge)
 
@@ -206,10 +214,6 @@ func main() {
 	t.AppendFooter(table.Row{"", "", "Total", totalVulnsFmt})
 	t.SetColumnConfigs([]table.ColumnConfig{
 		{Number: 1, AutoMerge: true},
-		{Number: 2, AutoMerge: true},
-		//{Number: 4, AutoMerge: true},
-		//{Number: 5, Align: text.AlignCenter, AlignFooter: text.AlignCenter, AlignHeader: text.AlignCenter},
-		//{Number: 6, Align: text.AlignCenter, AlignFooter: text.AlignCenter, AlignHeader: text.AlignCenter},
 	})
 	t.SetStyle(table.StyleLight)
 	t.Style().Options.SeparateRows = true
@@ -220,6 +224,29 @@ func main() {
 		{Name: "Vulnerabilities", Mode: table.Asc},
 	})
 	fmt.Println(t.Render())
+}
+
+func fmtVuln(severitySuffix string, count int) string {
+	var f func(format string, a ...interface{}) string
+
+	switch severitySuffix {
+	case "C":
+		f = color.New(color.FgBlack, color.BgHiRed).SprintfFunc()
+	case "H":
+		f = color.New(color.FgBlack, color.BgHiMagenta).SprintfFunc()
+	case "M":
+		f = color.New(color.FgBlack, color.BgHiYellow).SprintfFunc()
+	case "L":
+		f = color.New(color.FgBlack, color.BgHiCyan).SprintfFunc()
+	}
+
+	vulnText := fmt.Sprintf("  %d%s  ", count, severitySuffix)
+
+	if count == 0 {
+		return color.New(color.FgBlack).SprintfFunc()(vulnText)
+	}
+
+	return f(vulnText)
 }
 
 type SarifReport struct {
@@ -292,27 +319,4 @@ type Vulnerabilities struct {
 	High     int
 	Medium   int
 	Low      int
-}
-
-func fmtVuln(severitySuffix string, count int) string {
-	var f func(format string, a ...interface{}) string
-
-	switch severitySuffix {
-	case "C":
-		f = color.New(color.FgBlack, color.BgHiRed).SprintfFunc()
-	case "H":
-		f = color.New(color.FgBlack, color.BgHiMagenta).SprintfFunc()
-	case "M":
-		f = color.New(color.FgBlack, color.BgHiYellow).SprintfFunc()
-	case "L":
-		f = color.New(color.FgBlack, color.BgHiCyan).SprintfFunc()
-	}
-
-	vulnText := fmt.Sprintf("  %d%s  ", count, severitySuffix)
-
-	if count == 0 {
-		return color.New(color.FgBlack).SprintfFunc()(vulnText)
-	}
-
-	return f(vulnText)
 }
