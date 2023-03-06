@@ -117,9 +117,10 @@ func main() {
 			},
 		}
 
-		for _, c := range pod.Spec.Containers {
+		for i, c := range pod.Spec.Containers {
 			wg.Add(1)
 
+			i := i
 			c := c
 
 			item.Pod.Containers = append(item.Pod.Containers, Container{
@@ -157,26 +158,26 @@ func main() {
 						if rule.ID == result.RuleID {
 							switch rule.Properties.CvssV3Severity {
 							case "LOW":
-								item.Pod.Containers[0].Vulnerabilities.Low += 1
+								item.Pod.Containers[i].Vulnerabilities.Low += 1
 								lowVuln += 1
 							case "MEDIUM":
-								item.Pod.Containers[0].Vulnerabilities.Medium += 1
+								item.Pod.Containers[i].Vulnerabilities.Medium += 1
 								mediumVuln += 1
 							case "HIGH":
-								item.Pod.Containers[0].Vulnerabilities.High += 1
+								item.Pod.Containers[i].Vulnerabilities.High += 1
 								highVuln += 1
 							case "CRITICAL":
-								item.Pod.Containers[0].Vulnerabilities.Critical += 1
+								item.Pod.Containers[i].Vulnerabilities.Critical += 1
 								criticalVuln += 1
 							}
 							break
 						}
 					}
 				}
-
-				items = append(items, item)
 			}()
 		}
+
+		items = append(items, item)
 	}
 
 	if verbose {
@@ -214,6 +215,7 @@ func main() {
 	t.AppendFooter(table.Row{"", "", "Total", totalVulnsFmt})
 	t.SetColumnConfigs([]table.ColumnConfig{
 		{Number: 1, AutoMerge: true},
+		{Number: 2, AutoMerge: true},
 	})
 	t.SetStyle(table.StyleLight)
 	t.Style().Options.SeparateRows = true
