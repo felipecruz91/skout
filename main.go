@@ -10,13 +10,22 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"strings"
 	"sync"
 
 	"github.com/fatih/color"
+	"github.com/hashicorp/go-version"
 	"github.com/jedib0t/go-pretty/v6/table"
 	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/clientcmd"
+)
+
+const (
+	// dockerDesktopMinVersion is the first version of Docker Desktop that ships the "docker scout" CLI plugin.
+	dockerDesktopMinVersion = "4.17.0"
+	// resultsDir is the host directory where the analysis SARIF files will be stored
+	resultsDir = "results"
 )
 
 func main() {
@@ -45,8 +54,8 @@ func main() {
 		}
 	}
 
-	if _, err := os.Stat("results"); !errors.Is(err, os.ErrNotExist) {
-		_ = os.RemoveAll("results")
+	if _, err := os.Stat(resultsDir); !errors.Is(err, os.ErrNotExist) {
+		_ = os.RemoveAll(resultsDir)
 	}
 
 	if kubeConfig == "" {
@@ -64,6 +73,26 @@ func main() {
 
 	if _, err := os.Stat(kubeConfig); errors.Is(err, os.ErrNotExist) {
 		log.Fatalf("loading kubeconfig file: %s", err)
+	}
+
+	var hubUser, hubPassword string
+	canUseDockerScoutCLI := canUseDockerScoutCLI()
+	if canUseDockerScoutCLI {
+		log.Printf("Will be using the docker scout CLI plugin that is shipped with Docker Desktop to analyze images")
+	} else {
+		log.Println("Docker Desktop 4.17 or higher is not detected in the system, will be using the image \"docker/scout-cli\" to analyze the images running in the Kubernetes cluster.")
+		log.Println("Note that the analysis will take longer as we'll be running docker scout in a container instead of using the CLI that comes with Docker Desktop 4.17 or higher.")
+		log.Println("For this reason make sure to provide \"DOCKER_SCOUT_HUB_USER\" and \"DOCKER_SCOUT_HUB_PASSWORD\" as environment variables to provide such values within the container where docker scout runs.")
+
+		hubUser = os.Getenv("DOCKER_SCOUT_HUB_USER")
+		if hubUser == "" {
+			log.Fatal("Environment variable DOCKER_SCOUT_HUB_USER is not set.")
+		}
+
+		hubPassword = os.Getenv("DOCKER_SCOUT_HUB_PASSWORD")
+		if hubPassword == "" {
+			log.Fatal("Environment variable DOCKER_SCOUT_HUB_PASSWORD is not set.")
+		}
 	}
 
 	// uses the current context in kubeconfig
@@ -96,7 +125,7 @@ func main() {
 
 	log.Printf("Analyzing a total of %d images, this may take a few seconds...", len(images))
 
-	if err := os.MkdirAll("results", os.ModePerm); err != nil {
+	if err := os.MkdirAll(resultsDir, os.ModePerm); err != nil {
 		log.Fatal(err)
 	}
 
@@ -131,19 +160,44 @@ func main() {
 			go func() {
 				defer wg.Done()
 
-				// replace the matched non-alphanumeric characters with the underscore character
-				outputFile := filepath.Join("results", regexp.MustCompile(`[^a-zA-Z-0-9]+`).ReplaceAllString(c.Image, "_")+".sarif.json")
+				var outDir string
 
-				args := []string{"scout", "cves"}
+				var cmd *exec.Cmd
+				var args []string
+				if canUseDockerScoutCLI {
+					args = []string{"scout", "cves"}
+					outDir = resultsDir
+				} else {
+					wd, err := os.Getwd()
+					if err != nil {
+						log.Fatal(err)
+					}
+
+					// Run the containerized version of docker scout using the docker/scout-cli image
+					args = []string{
+						"run",
+						"--rm",
+						"-e", fmt.Sprintf("DOCKER_SCOUT_HUB_USER=%s", hubUser),
+						"-e", fmt.Sprintf("DOCKER_SCOUT_HUB_PASSWORD=%s", hubPassword),
+						"-v", fmt.Sprintf("%s/%s:/tmp", wd, resultsDir),
+						"docker/scout-cli",
+						"cves"}
+
+					outDir = "/tmp"
+				}
+
+				// replace the matched non-alphanumeric characters with the underscore character
+				reportFilename := regexp.MustCompile(`[^a-zA-Z-0-9]+`).ReplaceAllString(c.Image, "_") + ".sarif.json"
+				outputFile := filepath.Join(outDir, reportFilename)
 				args = append(args, scoutArgs...)
 				args = append(args, "--format", "sarif", "--output", outputFile, c.Image)
 
-				cmd := exec.Command("docker", args...)
+				cmd = exec.Command("docker", args...)
 				if err := cmd.Run(); err != nil {
 					log.Fatal(err)
 				}
 
-				b, err := os.ReadFile(outputFile)
+				b, err := os.ReadFile(filepath.Join(resultsDir, reportFilename))
 				if err != nil {
 					log.Fatal(err)
 				}
@@ -226,6 +280,36 @@ func main() {
 		{Name: "Vulnerabilities", Mode: table.Asc},
 	})
 	fmt.Println(t.Render())
+}
+
+// canUseDockerScoutCLI returns whether the user has Docker Desktop installed and comes with Docker Scout (4.17 or higher).
+func canUseDockerScoutCLI() bool {
+	canUse := false
+
+	b, err := exec.Command("docker", "version").CombinedOutput()
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	var re = regexp.MustCompile(`(?m)Server: Docker Desktop (?P<version>.*) `)
+	for _, line := range strings.Split(string(b), "\n") {
+		if len(re.FindStringSubmatch(line)) == 2 {
+			detectedVersion, err := version.NewVersion(re.FindStringSubmatch(line)[1])
+			if err != nil {
+				log.Fatal(err)
+			}
+
+			minVersion, _ := version.NewVersion(dockerDesktopMinVersion)
+			if detectedVersion.GreaterThanOrEqual(minVersion) {
+				log.Printf("Docker Desktop version %s is greater or equal than %s", detectedVersion, minVersion)
+				canUse = true
+				break
+			}
+
+		}
+	}
+
+	return canUse
 }
 
 func fmtVuln(severitySuffix string, count int) string {
