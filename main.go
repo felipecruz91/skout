@@ -208,24 +208,19 @@ func main() {
 				}
 
 				for _, result := range report.Runs[0].Results {
-					for _, rule := range report.Runs[0].Tool.Driver.Rules {
-						if rule.ID == result.RuleID {
-							switch rule.Properties.CvssV3Severity {
-							case "LOW":
-								item.Pod.Containers[i].Vulnerabilities.Low += 1
-								lowVuln += 1
-							case "MEDIUM":
-								item.Pod.Containers[i].Vulnerabilities.Medium += 1
-								mediumVuln += 1
-							case "HIGH":
-								item.Pod.Containers[i].Vulnerabilities.High += 1
-								highVuln += 1
-							case "CRITICAL":
-								item.Pod.Containers[i].Vulnerabilities.Critical += 1
-								criticalVuln += 1
-							}
-							break
-						}
+					switch {
+					case strings.Contains(result.Message.Text, ": LOW"):
+						item.Pod.Containers[i].Vulnerabilities.Low += 1
+						lowVuln += 1
+					case strings.Contains(result.Message.Text, ": MEDIUM"):
+						item.Pod.Containers[i].Vulnerabilities.Medium += 1
+						mediumVuln += 1
+					case strings.Contains(result.Message.Text, ": HIGH"):
+						item.Pod.Containers[i].Vulnerabilities.High += 1
+						highVuln += 1
+					case strings.Contains(result.Message.Text, ": CRITICAL"):
+						item.Pod.Containers[i].Vulnerabilities.Critical += 1
+						criticalVuln += 1
 					}
 				}
 			}()
